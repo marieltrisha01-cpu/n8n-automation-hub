@@ -18,8 +18,8 @@ bucket_name = "pinterest-pins"
 crons = ["*/10 * * * *"]
 
 [vars]
-# Set N8N_PUBLIC_URL to your Hugging Face Space URL (e.g. https://<user>-<space>.hf.space)
-N8N_PUBLIC_URL = ""
+# Set N8N_PUBLIC_URL to your Render Web Service URL
+N8N_PUBLIC_URL = "https://n8n-automation-hub-ad0x.onrender.com"
 # Optional: set R2_PUBLIC_BASE_URL to your R2.dev or custom domain; defaults to this Worker's /pins/ route
 R2_PUBLIC_BASE_URL = ""
 # Set to "true" to reject any image not strictly 1000x1500 after Workers AI / cf.image resize

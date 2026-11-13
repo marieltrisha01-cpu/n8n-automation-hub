@@ -1,7 +1,8 @@
 # ─────── Created: 2026-11-14 | Purpose: 24/7 Free n8n Docker Image for Render.com Free Tier (and compatible Docker hosts) | Last verified with: n8n 2.32.5 ───────
 # Run with AI CLI: [docker build -f hf-space/Dockerfile -t n8n-automation-hub .]
 
-FROM docker.n8n.io/n8nio/n8n:latest
+# ghcr.io mirror avoids docker.n8n.io 429 rate limits on shared Render builders
+FROM ghcr.io/n8n-io/n8n:latest
 
 USER root
 
