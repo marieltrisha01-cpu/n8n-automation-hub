@@ -1,0 +1,29 @@
+# ─────── Created: 2026-11-14 | Purpose: Cloudflare Worker config for 1000x1500 AI Image Gen, R2 Hosting & 24/7 n8n Keep-Alive Cron | Last verified with: wrangler 3.x ───────
+# Run with AI CLI: [npx wrangler deploy]
+
+name = "pinterest-media-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+workers_dev = true
+
+[ai]
+binding = "AI"
+
+[[r2_buckets]]
+binding = "PINS_BUCKET"
+bucket_name = "pinterest-pins"
+
+[triggers]
+# Pings Hugging Face Spaces n8n /healthz every 10 minutes to prevent free-tier sleep
+crons = ["*/10 * * * *"]
+
+[vars]
+# Set N8N_PUBLIC_URL to your Hugging Face Space URL (e.g. https://<user>-<space>.hf.space)
+N8N_PUBLIC_URL = ""
+# Optional: set R2_PUBLIC_BASE_URL to your R2.dev or custom domain; defaults to this Worker's /pins/ route
+R2_PUBLIC_BASE_URL = ""
+# Set to "true" to reject any image not strictly 1000x1500 after Workers AI / cf.image resize
+STRICT_DIMENSIONS = "true"
+
+# Required secrets (set via `npx wrangler secret put <NAME>`):
+# - CF_WORKER_SECRET: Bearer token required by n8n to call POST /generate-pin-image and /generate-seo-copy

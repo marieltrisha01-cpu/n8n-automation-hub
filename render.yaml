@@ -1,0 +1,45 @@
+# ─────── Created: 2026-11-14 | Purpose: Render.com Free Tier 24/7 Docker Blueprint for n8n Multi-Project Hub | Last verified with: Render Blueprint Spec 2026 ───────
+services:
+  - type: web
+    name: n8n-automation-hub
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./hf-space/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: GENERIC_TIMEZONE
+        value: Asia/Manila
+      - key: MAX_PINS_PER_RUN
+        value: "1"
+      - key: REQUIRE_APPROVAL
+        value: "true"
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: PINTEREST_ENV
+        value: sandbox
+      - key: PINTEREST_API_BASE_URL
+        value: https://api-sandbox.pinterest.com
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: DATABASE_URL
+        sync: false
+      - key: N8N_ENCRYPTION_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CF_MEDIA_WORKER_URL
+        sync: false
+      - key: CF_WORKER_SECRET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: GSHEETS_DOC_ID
+        sync: false
+      - key: PINTEREST_ACCESS_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

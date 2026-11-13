@@ -1,0 +1,11 @@
+# Secrets & local environment
+.env
+.env.*
+!.env.example
+.neon
+
+# Dependencies & build artifacts
+node_modules/
+cloudflare-worker/node_modules/
+.wrangler/
+*.log

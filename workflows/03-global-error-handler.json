@@ -1,0 +1,184 @@
+{
+  "name": "00 - Universal Global Error Handler (All Projects)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "node-error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -480,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.item.json || {};\nconst exec = payload.execution || {};\nconst wf = payload.workflow || {};\nconst err = exec.error || {};\n\nconst message = String(err.message || 'Unknown n8n workflow error');\nconst nodeName = String(err.node?.name || exec.lastNodeExecuted || 'Unknown Node');\nconst executionId = String(exec.id || 'N/A');\nconst executionUrl = String(exec.url || '');\nconst workflowName = String(wf.name || 'n8n Automation Hub');\n\n// Extract row_id if embedded in a Sheets-backed workflow error (e.g. \"row 3\")\nconst rowMatch = message.match(/row\\s+(\\d+)/i);\nconst rowId = rowMatch ? rowMatch[1] : '';\n\nreturn [{\n  json: {\n    workflow_name: workflowName,\n    execution_id: executionId,\n    execution_url: executionUrl,\n    failed_node: nodeName,\n    error_message: message,\n    row_id: rowId,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-format-error",
+      "name": "Format Structured Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-sheet-row",
+              "leftValue": "={{ Boolean($json.row_id && $env.GSHEETS_DOC_ID) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-has-sheet-row",
+      "name": "IF Has Sheet Row ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        200
+      ],
+      "notes": "Routes Pinterest/Sheets errors to update Content_Queue, while other projects jump directly to Telegram alerting."
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content_Queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "={{ $json.row_id }}",
+            "status": "ERROR",
+            "error_log": "={{ '[' + $json.timestamp + '] ' + $json.failed_node + ': ' + $json.error_message }}"
+          },
+          "matchingColumns": [
+            "row_id"
+          ]
+        }
+      },
+      "id": "node-gsheets-mark-error",
+      "name": "Google Sheets: Mark Row ERROR",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        260,
+        100
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: '🚨 n8n Hub Workflow Error\\n\\nProject / Workflow: ' + $('Format Structured Error Log').item.json.workflow_name + '\\nNode: ' + $('Format Structured Error Log').item.json.failed_node + '\\nExecution ID: ' + $('Format Structured Error Log').item.json.execution_id + '\\nError: ' + $('Format Structured Error Log').item.json.error_message + ($('Format Structured Error Log').item.json.execution_url ? '\\nInspect: ' + $('Format Structured Error Log').item.json.execution_url : '') }) }}",
+        "options": {}
+      },
+      "id": "node-telegram-error-alert",
+      "name": "Telegram: Send Error Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Structured Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Structured Error Log": {
+      "main": [
+        [
+          {
+            "node": "IF Has Sheet Row ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Sheet Row ID": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Mark Row ERROR",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram: Send Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Mark Row ERROR": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "1.1.0",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

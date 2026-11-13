@@ -1,0 +1,294 @@
+{
+  "name": "02 - Pinterest Publisher Sub-Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "node-subworkflow-trigger",
+      "name": "Sub-Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst required = ['row_id', 'board_id', 'pin_title', 'pin_description', 'target_link', 'image_url', 'content_hash'];\nfor (const key of required) {\n  if (!String(item[key] || '').trim()) {\n    throw new Error(`Pre-publish validation failed: missing required field '${key}'.`);\n  }\n}\n\nif (!/^\\d+$/.test(String(item.board_id).trim())) {\n  throw new Error(`Pre-publish validation failed: board_id '${item.board_id}' must be numeric.`);\n}\nif (String(item.pin_title).length > 100) {\n  throw new Error('Pre-publish validation failed: pin_title exceeds 100 characters.');\n}\nif (String(item.pin_description).length > 500) {\n  throw new Error('Pre-publish validation failed: pin_description exceeds 500 characters.');\n}\nif (!/^https:\\/\\//i.test(String(item.image_url))) {\n  throw new Error('Pre-publish validation failed: image_url must be HTTPS.');\n}\n\nreturn [{ json: item }];"
+      },
+      "id": "node-prepublish-validator",
+      "name": "Pre-Publish Idempotency & Field Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "HEAD",
+        "url": "={{ $json.image_url }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-verify-image-head",
+      "name": "Verify Hosted Image Reachable (HTTP HEAD)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -280,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.PINTEREST_API_BASE_URL || 'https://api.pinterest.com').replace(/\\/$/, '') + '/v5/pins' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.PINTEREST_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ board_id: String($('Pre-Publish Idempotency & Field Validator').item.json.board_id), title: $('Pre-Publish Idempotency & Field Validator').item.json.pin_title, description: $('Pre-Publish Idempotency & Field Validator').item.json.pin_description, alt_text: $('Pre-Publish Idempotency & Field Validator').item.json.alt_text || '', link: $('Pre-Publish Idempotency & Field Validator').item.json.target_link, media_source: { source_type: 'image_url', url: $('Pre-Publish Idempotency & Field Validator').item.json.image_url } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-pinterest-publish",
+      "name": "Pinterest API v5: Publish Pin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -40,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "node-rate-limit-wait",
+      "name": "Rate Limit Pacing Wait (15s)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content_Queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "={{ $('Pre-Publish Idempotency & Field Validator').item.json.row_id }}",
+            "status": "PUBLISHED",
+            "pinterest_pin_id": "={{ $('Pinterest API v5: Publish Pin').item.json.id }}",
+            "pinterest_pin_url": "={{ 'https://www.pinterest.com/pin/' + $('Pinterest API v5: Publish Pin').item.json.id + '/' }}",
+            "published_at": "={{ $now.toISO() }}",
+            "error_log": ""
+          },
+          "matchingColumns": [
+            "row_id"
+          ]
+        }
+      },
+      "id": "node-gsheets-update-published",
+      "name": "Google Sheets: Update Queue (PUBLISHED)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        200
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Published_Ledger",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "content_hash": "={{ $('Pre-Publish Idempotency & Field Validator').item.json.content_hash }}",
+            "pinterest_pin_id": "={{ $('Pinterest API v5: Publish Pin').item.json.id }}",
+            "pinterest_pin_url": "={{ 'https://www.pinterest.com/pin/' + $('Pinterest API v5: Publish Pin').item.json.id + '/' }}",
+            "board_id": "={{ $('Pre-Publish Idempotency & Field Validator').item.json.board_id }}",
+            "pin_title": "={{ $('Pre-Publish Idempotency & Field Validator').item.json.pin_title }}",
+            "image_url": "={{ $('Pre-Publish Idempotency & Field Validator').item.json.image_url }}",
+            "published_at": "={{ $now.toISO() }}"
+          }
+        }
+      },
+      "id": "node-gsheets-append-ledger",
+      "name": "Google Sheets: Append Published Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        680,
+        200
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: '✅ Pinterest Pin Published!\\n\\nTitle: ' + $('Pre-Publish Idempotency & Field Validator').item.json.pin_title + '\\nBoard ID: ' + $('Pre-Publish Idempotency & Field Validator').item.json.board_id + '\\nURL: https://www.pinterest.com/pin/' + $('Pinterest API v5: Publish Pin').item.json.id + '/' }) }}",
+        "options": {}
+      },
+      "id": "node-telegram-published",
+      "name": "Telegram: Send Published Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Sub-Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pre-Publish Idempotency & Field Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pre-Publish Idempotency & Field Validator": {
+      "main": [
+        [
+          {
+            "node": "Verify Hosted Image Reachable (HTTP HEAD)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Hosted Image Reachable (HTTP HEAD)": {
+      "main": [
+        [
+          {
+            "node": "Pinterest API v5: Publish Pin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinterest API v5: Publish Pin": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Pacing Wait (15s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Pacing Wait (15s)": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Update Queue (PUBLISHED)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Update Queue (PUBLISHED)": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Append Published Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Append Published Ledger": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Published Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "1.0.0",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

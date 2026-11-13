@@ -1,0 +1,754 @@
+{
+  "name": "01 - Pinterest Content Creation & Approval Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9,13,17,21 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        120
+      ],
+      "notes": "Scheduled publishing trigger (default 9am, 1pm, 5pm, 9pm). Keep workflow inactive until single-Pin test passes."
+    },
+    {
+      "parameters": {},
+      "id": "node-manual-trigger",
+      "name": "Manual Test Trigger (1 Pin)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        320
+      ],
+      "notes": "Use this trigger for initial 1-Pin testing with MAX_PINS_PER_RUN=1 and REQUIRE_APPROVAL=true."
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content_Queue",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "PENDING"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-gsheets-read-queue",
+      "name": "Google Sheets: Read Pending Queue",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -940,
+        220
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Published_Ledger",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "node-gsheets-read-ledger",
+      "name": "Google Sheets: Read Published Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -700,
+        220
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst pendingRows = $('Google Sheets: Read Pending Queue').all().map(i => i.json);\nconst ledgerRows = $input.all().map(i => i.json).filter(r => r && (r.content_hash || r.pinterest_pin_id));\n\nconst existingHashes = new Set(ledgerRows.map(r => String(r.content_hash || '').trim()).filter(Boolean));\nconst maxPins = Math.max(1, Number($env.MAX_PINS_PER_RUN || 1));\n\nconst results = [];\nlet acceptedCount = 0;\n\nfor (const row of pendingRows) {\n  const rowId = String(row.row_id || '').trim();\n  const topic = String(row.topic || '').trim();\n  const targetLink = String(row.target_link || '').trim();\n  const boardId = String(row.board_id || '').trim();\n\n  if (!rowId) throw new Error('Validation failed: row_id is required on every Content_Queue row.');\n  if (!topic || topic.length < 5) throw new Error(`Validation failed on row ${rowId}: topic must be >= 5 characters.`);\n  if (!/^https:\\/\\//i.test(targetLink)) throw new Error(`Validation failed on row ${rowId}: target_link must start with https://`);\n  if (!/^\\d+$/.test(boardId)) throw new Error(`Validation failed on row ${rowId}: board_id must be a numeric Pinterest board ID.`);\n\n  const normalizedSignature = `${topic.toLowerCase()}|${targetLink.toLowerCase()}|${boardId}`;\n  const contentHash = crypto.createHash('sha256').update(normalizedSignature).digest('hex').slice(0, 32);\n  const isDuplicate = existingHashes.has(contentHash);\n\n  if (isDuplicate) {\n    results.push({\n      json: {\n        ...row,\n        row_id: rowId,\n        topic,\n        target_link: targetLink,\n        board_id: boardId,\n        content_hash: contentHash,\n        is_duplicate: true\n      }\n    });\n    continue;\n  }\n\n  if (acceptedCount >= maxPins) {\n    continue;\n  }\n\n  existingHashes.add(contentHash);\n  acceptedCount += 1;\n  results.push({\n    json: {\n      ...row,\n      row_id: rowId,\n      topic,\n      target_link: targetLink,\n      board_id: boardId,\n      content_hash: contentHash,\n      is_duplicate: false\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "node-validate-dedupe",
+      "name": "Validate Input & Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-is-duplicate",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-duplicate",
+      "name": "IF Duplicate Pin",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -220,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content_Queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "={{ $json.row_id }}",
+            "status": "DUPLICATE",
+            "content_hash": "={{ $json.content_hash }}",
+            "error_log": "Skipped: matching content_hash already exists in Published_Ledger."
+          },
+          "matchingColumns": [
+            "row_id"
+          ]
+        }
+      },
+      "id": "node-gsheets-mark-duplicate",
+      "name": "Google Sheets: Mark Duplicate",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        40,
+        40
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-split-batches",
+      "name": "Split In Batches (1 Pin)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        40,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-pregenerated",
+              "leftValue": "={{ Boolean($json.pin_title && $json.pin_description && $json.image_prompt) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-pregenerated",
+      "name": "IF Pre-Generated (Antigravity / Sheets AI)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        260,
+        260
+      ],
+      "notes": "Skips external API call when pin_title, pin_description, and image_prompt were pre-filled by Antigravity or Google AI Pro in Sheets."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-2.5-flash') + ':generateContent' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ systemInstruction: { parts: [{ text: 'You are an expert Pinterest SEO strategist and visual director. Return ONLY valid JSON with keys: pin_title (<=100 chars, front-loaded keyword), pin_description (150-480 chars, natural keywords + CTA + 3-5 hashtags), seo_keywords (comma-separated string of 8-12 long-tail keywords), alt_text (<=480 chars descriptive accessibility text), image_prompt (detailed vertical 2:3 editorial photography/graphic prompt for a 1000x1500 Pinterest pin, clean negative space, no gibberish text).' }] }, contents: [{ role: 'user', parts: [{ text: 'Generate Pinterest SEO content and visual prompt for topic: \"' + $json.topic + '\" linking to: ' + $json.target_link }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 700, responseMimeType: 'application/json' } }) }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "node-gemini-generate",
+      "name": "Gemini AI: Generate SEO Pin Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('Split In Batches (1 Pin)').item.json;\nconst inputJson = $input.item.json || {};\n\nlet parsed;\nif (inputJson.pin_title && inputJson.pin_description && inputJson.image_prompt) {\n  // Path 1: Pre-generated directly in Google Sheets by Antigravity or Google AI Pro\n  parsed = inputJson;\n} else {\n  // Path 2: Official Gemini API (generateContent) or Path 3: Anthropic/Cloudflare fallback\n  const geminiText = inputJson?.candidates?.[0]?.content?.parts?.[0]?.text;\n  const anthropicText = inputJson?.content?.[0]?.text;\n  const rawText = String(geminiText || anthropicText || '');\n  const cleaned = rawText.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n\n  try {\n    parsed = JSON.parse(cleaned);\n  } catch (err) {\n    throw new Error(`AI returned non-JSON payload: ${err.message}. Raw: ${cleaned.slice(0, 200)}`);\n  }\n}\n\nconst pinTitle = String(parsed.pin_title || '').trim();\nconst pinDescription = String(parsed.pin_description || '').trim();\nconst seoKeywords = Array.isArray(parsed.seo_keywords)\n  ? parsed.seo_keywords.join(', ')\n  : String(parsed.seo_keywords || '').trim();\nconst altText = String(parsed.alt_text || '').trim();\nconst imagePrompt = String(parsed.image_prompt || '').trim();\n\nif (!pinTitle || pinTitle.length > 100) {\n  throw new Error(`SEO Validation failed: pin_title must be 1-100 chars (got ${pinTitle.length}).`);\n}\nif (pinDescription.length < 50 || pinDescription.length > 500) {\n  throw new Error(`SEO Validation failed: pin_description must be 50-500 chars (got ${pinDescription.length}).`);\n}\nif (!seoKeywords) {\n  throw new Error('SEO Validation failed: seo_keywords cannot be empty.');\n}\nif (!altText || altText.length > 500) {\n  throw new Error(`SEO Validation failed: alt_text must be 1-500 chars (got ${altText.length}).`);\n}\nif (imagePrompt.length < 20) {\n  throw new Error('SEO Validation failed: image_prompt must be >= 20 characters.');\n}\n\nreturn [{\n  json: {\n    ...original,\n    pin_title: pinTitle,\n    pin_description: pinDescription,\n    seo_keywords: seoKeywords,\n    alt_text: altText,\n    image_prompt: imagePrompt\n  }\n}];"
+      },
+      "id": "node-validate-seo",
+      "name": "Validate SEO & Schema Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.CF_MEDIA_WORKER_URL || '').replace(/\\/$/, '') + '/generate-pin-image' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.CF_WORKER_SECRET }}"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.image_prompt, content_hash: $json.content_hash }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-cf-generate-image",
+      "name": "Cloudflare Worker: Generate & Host 1000x1500 Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000
+    },
+    {
+      "parameters": {
+        "jsCode": "const pinData = $('Validate SEO & Schema Fields').item.json;\nconst media = $input.item.json;\n\nif (!media || !/^https:\\/\\//i.test(String(media.image_url || ''))) {\n  throw new Error(`Image hosting failed: invalid image_url (${media?.image_url}).`);\n}\nif (Number(media.width) !== 1000 || Number(media.height) !== 1500) {\n  throw new Error(`Image dimension check failed: expected 1000x1500, got ${media.width}x${media.height}.`);\n}\n\nreturn [{\n  json: {\n    ...pinData,\n    image_url: media.image_url,\n    image_width: 1000,\n    image_height: 1500\n  }\n}];"
+      },
+      "id": "node-verify-image-meta",
+      "name": "Verify 1000x1500 Image Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GSHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content_Queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "={{ $json.row_id }}",
+            "status": "AWAITING_APPROVAL",
+            "pin_title": "={{ $json.pin_title }}",
+            "pin_description": "={{ $json.pin_description }}",
+            "seo_keywords": "={{ $json.seo_keywords }}",
+            "alt_text": "={{ $json.alt_text }}",
+            "image_prompt": "={{ $json.image_prompt }}",
+            "image_url": "={{ $json.image_url }}",
+            "content_hash": "={{ $json.content_hash }}"
+          },
+          "matchingColumns": [
+            "row_id"
+          ]
+        }
+      },
+      "id": "node-gsheets-stage-draft",
+      "name": "Google Sheets: Stage Draft (AWAITING_APPROVAL)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1460,
+        260
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "CONFIGURE_GOOGLE_SERVICE_ACCOUNT",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-require-approval",
+              "leftValue": "={{ String($env.REQUIRE_APPROVAL || 'true').toLowerCase() }}",
+              "rightValue": "false",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-approval-required",
+      "name": "IF Approval Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendPhoto' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, photo: $('Verify 1000x1500 Image Metadata').item.json.image_url, caption: '📌 Pinterest Pin Approval Required (Row ' + $('Verify 1000x1500 Image Metadata').item.json.row_id + ')\\n\\nTitle: ' + $('Verify 1000x1500 Image Metadata').item.json.pin_title + '\\nBoard ID: ' + $('Verify 1000x1500 Image Metadata').item.json.board_id + '\\n\\nDescription:\\n' + $('Verify 1000x1500 Image Metadata').item.json.pin_description.slice(0, 350), reply_markup: { inline_keyboard: [[ { text: '✅ Approve & Publish', url: $execution.resumeUrl + '?approved=true' }, { text: '❌ Reject', url: $execution.resumeUrl + '?approved=false' } ]] } }) }}",
+        "options": {}
+      },
+      "id": "node-telegram-approval-preview",
+      "name": "Telegram: Send Approval Preview",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1940,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "pin-approval"
+        }
+      },
+      "id": "node-wait-approval",
+      "name": "Wait for Human Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2180,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-approved",
+              "leftValue": "={{ String($json.query?.approved || '') }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-approved",
+      "name": "IF Approved by Reviewer",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_SUBWORKFLOW_02_ID",
+          "mode": "id"
+        },
+        "mode": "each",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "={{ $('Verify 1000x1500 Image Metadata').item.json.row_id }}",
+            "board_id": "={{ $('Verify 1000x1500 Image Metadata').item.json.board_id }}",
+            "pin_title": "={{ $('Verify 1000x1500 Image Metadata').item.json.pin_title }}",
+            "pin_description": "={{ $('Verify 1000x1500 Image Metadata').item.json.pin_description }}",
+            "alt_text": "={{ $('Verify 1000x1500 Image Metadata').item.json.alt_text }}",
+            "target_link": "={{ $('Verify 1000x1500 Image Metadata').item.json.target_link }}",
+            "image_url": "={{ $('Verify 1000x1500 Image Metadata').item.json.image_url }}",
+            "content_hash": "={{ $('Verify 1000x1500 Image Metadata').item.json.content_hash }}"
+          }
+        }
+      },
+      "id": "node-execute-publisher",
+      "name": "Execute Sub-Workflow: Pinterest Publisher",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2680,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Read Pending Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test Trigger (1 Pin)": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Read Pending Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Read Pending Queue": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Read Published Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Read Published Ledger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input & Deduplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input & Deduplicate": {
+      "main": [
+        [
+          {
+            "node": "IF Duplicate Pin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Duplicate Pin": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Mark Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split In Batches (1 Pin)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches (1 Pin)": {
+      "main": [
+        [],
+        [
+          {
+            "node": "IF Pre-Generated (Antigravity / Sheets AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Pre-Generated (Antigravity / Sheets AI)": {
+      "main": [
+        [
+          {
+            "node": "Validate SEO & Schema Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini AI: Generate SEO Pin Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini AI: Generate SEO Pin Content": {
+      "main": [
+        [
+          {
+            "node": "Validate SEO & Schema Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate SEO & Schema Fields": {
+      "main": [
+        [
+          {
+            "node": "Cloudflare Worker: Generate & Host 1000x1500 Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudflare Worker: Generate & Host 1000x1500 Image": {
+      "main": [
+        [
+          {
+            "node": "Verify 1000x1500 Image Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify 1000x1500 Image Metadata": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Stage Draft (AWAITING_APPROVAL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: Stage Draft (AWAITING_APPROVAL)": {
+      "main": [
+        [
+          {
+            "node": "IF Approval Required",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Approval Required": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Approval Preview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute Sub-Workflow: Pinterest Publisher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Approval Preview": {
+      "main": [
+        [
+          {
+            "node": "Wait for Human Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Human Approval": {
+      "main": [
+        [
+          {
+            "node": "IF Approved by Reviewer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Approved by Reviewer": {
+      "main": [
+        [
+          {
+            "node": "Execute Sub-Workflow: Pinterest Publisher",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Split In Batches (1 Pin)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Sub-Workflow: Pinterest Publisher": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches (1 Pin)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "1.1.0",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
